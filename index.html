@@ -1,0 +1,875 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#0b0e16">
+<title>合成同学</title>
+<style>
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{
+    margin:0;padding:0;width:100%;height:100%;overflow:hidden;
+    background:#0b0e16;touch-action:none;
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue",Arial,sans-serif;
+    user-select:none;-webkit-user-select:none;
+  }
+  #app{position:fixed;inset:0;display:flex;align-items:center;justify-content:center}
+  #stage{position:relative;border-radius:18px;overflow:hidden;box-shadow:0 24px 70px rgba(0,0,0,.7)}
+  canvas{display:block;width:100%;height:100%;touch-action:none}
+
+  #panel{
+    position:absolute;inset:0;z-index:10;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;
+    gap:1em;padding:1em;
+    background:rgba(8,10,18,.94);
+    color:#e8eefc;
+  }
+  #panel.hidden{display:none}
+  .ptitle{font-size:.82em;color:#9fb0cc;text-align:center;line-height:1.7}
+  .slots{display:grid;grid-template-columns:repeat(5,3.1em);gap:.5em}
+  .slot{
+    width:3.1em;height:3.1em;border-radius:50%;
+    display:flex;align-items:center;justify-content:center;
+    font-size:1.25em;line-height:1;
+    background:rgba(255,255,255,.07);
+    background-size:cover;background-position:center;
+    border:2px dashed rgba(255,255,255,.25);
+    cursor:pointer;transition:transform .12s;
+  }
+  .slot:active{transform:scale(.93)}
+  .pbtn{
+    padding:.62em 1.9em;border-radius:2em;border:none;
+    background:linear-gradient(135deg,#6aa9ff,#4a7dff);color:#fff;
+    font-size:.9em;font-weight:600;cursor:pointer;
+  }
+  .pbtn.ghost{background:rgba(255,255,255,.1);color:#c9d6ee}
+  .pbtn:active{opacity:.8}
+  .row{display:flex;gap:.7em}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="stage">
+    <canvas id="game"></canvas>
+    <div id="panel" class="hidden">
+      <div class="ptitle">
+        小圆 = 1号同学，越合越大，最大是 10号<br>
+        点单个圆可单独替换，或一次批量选 10 张
+      </div>
+      <div class="slots" id="slots"></div>
+      <div class="row">
+        <button class="pbtn ghost" id="batchBtn">批量选择 10 张</button>
+        <button class="pbtn" id="closePanel">完成</button>
+      </div>
+    </div>
+  </div>
+</div>
+<input type="file" id="fileInput" accept="image/*" style="display:none">
+<input type="file" id="batchInput" accept="image/*" multiple style="display:none">
+
+<script>
+(function () {
+'use strict';
+
+/* ============ 基础参数 ============ */
+const W = 360, H = 640;
+const WALL_L = 30, WALL_R = 330;
+const FLOOR_Y = 610;
+const DANGER_Y = 130;
+const DROP_Y = 76;
+const GRAVITY = 2000;
+const LEVELS = 10;              // 共 10 级，对应 10 个同学
+const MAX_LEVEL = LEVELS - 1;   // 9
+
+const RADII = [13, 17, 22, 27, 33, 39, 46, 53, 60, 68];
+const PALETTE = [
+  { a: '#8fd6ff', b: '#3d8ee0' },
+  { a: '#b6f09c', b: '#4caf50' },
+  { a: '#ffe082', b: '#f5a623' },
+  { a: '#ffa8b6', b: '#e8506e' },
+  { a: '#c3a6ff', b: '#7c4dff' },
+  { a: '#ffd08a', b: '#f76b1c' },
+  { a: '#9ee7e5', b: '#00a3a3' },
+  { a: '#ffc2e2', b: '#d6419b' },
+  { a: '#c9d4ff', b: '#5b6ff0' },
+  { a: '#ffe4a3', b: '#c98a00' }
+];
+const EMOJIS = ['😀', '😄', '😎', '🤓', '😍', '🥳', '🤩', '😜', '🧐', '🤯'];
+
+const BTN_RESTART = { x: 36, y: 36, r: 18 };
+const BTN_PHOTO   = { x: W - 36, y: 36, r: 18 };
+
+/* ============ DOM ============ */
+const canvas    = document.getElementById('game');
+const ctx       = canvas.getContext('2d');
+const stage     = document.getElementById('stage');
+const panel     = document.getElementById('panel');
+const slotsEl   = document.getElementById('slots');
+const fileInput = document.getElementById('fileInput');
+const batchInput= document.getElementById('batchInput');
+
+/* ============ 状态 ============ */
+let balls = [];
+let particles = [];
+let floaters = [];
+let score = 0;
+let state = 'playing';
+let curLevel = 0, nextLevel = 0;
+let pointerX = W / 2;
+let dropCd = 0;
+let overTimer = 0;
+let pressing = false;
+
+let images    = new Array(LEVELS).fill(null);  // 裁剪后的 canvas
+let imageUrls = new Array(LEVELS).fill('');    // 面板预览用
+let slotEditing = -1;
+let best = 0;
+try { best = parseInt(localStorage.getItem('hz_best') || '0', 10) || 0; } catch (e) {}
+
+/* ============ 自适应 ============ */
+function resize() {
+  const iw = window.innerWidth, ih = window.innerHeight;
+  const s  = Math.min(iw / W, ih / H);
+  const cw = Math.round(W * s), ch = Math.round(H * s);
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+
+  canvas.width  = Math.round(cw * dpr);
+  canvas.height = Math.round(ch * dpr);
+  canvas.style.width  = cw + 'px';
+  canvas.style.height = ch + 'px';
+  stage.style.width   = cw + 'px';
+  stage.style.height  = ch + 'px';
+
+  ctx.setTransform(canvas.width / W, 0, 0, canvas.height / H, 0, 0);
+  panel.style.fontSize = (16 * Math.max(s, 0.78)) + 'px';
+}
+window.addEventListener('resize', resize);
+window.addEventListener('orientationchange', () => setTimeout(resize, 120));
+
+/* ============ 工具 ============ */
+function clamp(v, a, b) { return v < a ? a : (v > b ? b : v); }
+
+function roundRectPath(c, x, y, w, h, r) {
+  c.beginPath();
+  c.moveTo(x + r, y);
+  c.arcTo(x + w, y, x + w, y + h, r);
+  c.arcTo(x + w, y + h, x, y + h, r);
+  c.arcTo(x, y + h, x, y, r);
+  c.arcTo(x, y, x + w, y, r);
+  c.closePath();
+}
+
+function toLocal(clientX, clientY) {
+  const r = canvas.getBoundingClientRect();
+  return {
+    x: (clientX - r.left) / r.width * W,
+    y: (clientY - r.top) / r.height * H
+  };
+}
+
+function inBtn(b, p) {
+  const dx = p.x - b.x, dy = p.y - b.y;
+  return dx * dx + dy * dy <= (b.r + 8) * (b.r + 8);
+}
+
+/* 把任意图片源裁成 256x256 正方形 canvas（cover 方式） */
+function toSquareCanvas(source) {
+  const S = 256;
+  const c = document.createElement('canvas');
+  c.width = S; c.height = S;
+  const cc = c.getContext('2d');
+
+  const iw = source.naturalWidth  || source.width;
+  const ih = source.naturalHeight || source.height;
+  const sc = Math.max(S / iw, S / ih);
+  const dw = iw * sc, dh = ih * sc;
+
+  cc.drawImage(source, (S - dw) / 2, (S - dh) / 2, dw, dh);
+  return c;
+}
+
+/* ============ 球体 ============ */
+function makeBall(x, y, level, vx, vy) {
+  const r = RADII[level];
+  return {
+    x: x, y: y,
+    vx: vx || 0, vy: vy || 0,
+    level: level, r: r,
+    mass: r * r,
+    angle: 0, spin: 0,
+    age: 0, pop: 0
+  };
+}
+
+function randLevel() {
+  return Math.floor(Math.random() * LEVELS);   // 0..9，即 1号 ~ 10号
+}
+
+/* ============ 游戏流程 ============ */
+function reset() {
+  balls = [];
+  particles = [];
+  floaters = [];
+  score = 0;
+  overTimer = 0;
+  dropCd = 0;
+  pointerX = W / 2;
+  curLevel  = randLevel();
+  nextLevel = randLevel();
+  state = 'playing';
+  pressing = false;
+}
+
+function gameOver() {
+  if (state !== 'playing') return;
+  state = 'over';
+  if (score > best) {
+    best = score;
+    try { localStorage.setItem('hz_best', String(best)); } catch (e) {}
+  }
+}
+
+function drop() {
+  if (state !== 'playing' || dropCd > 0) return;
+  const r = RADII[curLevel];
+  const x = clamp(pointerX, WALL_L + r + 1, WALL_R - r - 1);
+  balls.push(makeBall(x, DROP_Y, curLevel, 0, 260));
+
+  curLevel  = nextLevel;
+  nextLevel = randLevel();
+  dropCd = 0.28;
+}
+
+/* ============ 物理 ============ */
+function step(dt) {
+  if (dropCd > 0) dropCd = Math.max(0, dropCd - dt);
+
+  /* 1. 积分 */
+  for (let i = 0; i < balls.length; i++) {
+    const b = balls[i];
+    b.age += dt;
+    if (b.pop > 0) b.pop = Math.max(0, b.pop - dt * 5);
+    b.vy += GRAVITY * dt;
+    b.x  += b.vx * dt;
+    b.y  += b.vy * dt;
+    b.angle += b.spin * dt;
+    b.vx *= 0.9995;
+    b.spin *= 0.99;
+  }
+
+  /* 2. 先把重叠推开到"刚好接触" */
+  for (let it = 0; it < 6; it++) {
+    solveWalls();
+    solvePairs();
+  }
+
+  /* 3. 再检测合并：接触即合并 */
+  if (mergeBalls()) {
+    for (let it = 0; it < 4; it++) {
+      solveWalls();
+      solvePairs();
+    }
+  }
+
+  /* 4. 粒子 */
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.life -= dt;
+    if (p.life <= 0) { particles.splice(i, 1); continue; }
+    p.vy += 700 * dt;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.vx *= 0.97;
+  }
+
+  /* 5. 飘分 */
+  for (let i = floaters.length - 1; i >= 0; i--) {
+    const f = floaters[i];
+    f.life -= dt;
+    f.y -= 42 * dt;
+    if (f.life <= 0) floaters.splice(i, 1);
+  }
+
+  /* 6. 危险判定 */
+  if (state === 'playing') {
+    let danger = false;
+    for (let i = 0; i < balls.length; i++) {
+      const b = balls[i];
+      if (b.age < 0.6) continue;
+      if (b.y - b.r < DANGER_Y) {
+        const sp = Math.sqrt(b.vx * b.vx + b.vy * b.vy);
+        if (sp < 90) { danger = true; break; }
+      }
+    }
+    if (danger) overTimer += dt;
+    else overTimer = Math.max(0, overTimer - dt * 3);
+    if (overTimer > 1.5) gameOver();
+  }
+}
+
+function mergeBalls() {
+  const n = balls.length;
+  if (n < 2) return false;
+
+  const dead = new Set();
+  const created = [];
+  let merged = false;
+
+  for (let i = 0; i < n; i++) {
+    if (dead.has(i)) continue;
+    const a = balls[i];
+    for (let j = i + 1; j < n; j++) {
+      if (dead.has(j)) continue;
+      const b = balls[j];
+      if (a.level !== b.level) continue;
+
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const rr = a.r + b.r;
+      const touch = rr * 1.06;               // 接触容差 6%
+      if (dx * dx + dy * dy > touch * touch) continue;
+
+      dead.add(i);
+      dead.add(j);
+      merged = true;
+
+      const mx = (a.x + b.x) / 2;
+      const my = (a.y + b.y) / 2;
+
+      if (a.level >= MAX_LEVEL) {
+        score += 300;
+        spawnBoom(mx, my, a.r);
+        addFloat(mx, my, '+300');
+      } else {
+        const nb = makeBall(mx, my, a.level + 1,
+                            (a.vx + b.vx) / 2,
+                            (a.vy + b.vy) / 2 - 110);
+        nb.pop = 1;
+        nb.age = 0;                          // 给新球一点判定宽限
+        created.push(nb);
+        const gain = (a.level + 1) * 10;
+        score += gain;
+        addFloat(mx, my, '+' + gain);
+      }
+      break;
+    }
+  }
+
+  if (!merged) return false;
+
+  const kept = [];
+  for (let i = 0; i < n; i++) if (!dead.has(i)) kept.push(balls[i]);
+  balls = kept.concat(created);
+  return true;
+}
+
+function solveWalls() {
+  for (let i = 0; i < balls.length; i++) {
+    const b = balls[i];
+
+    if (b.x - b.r < WALL_L) {
+      b.x = WALL_L + b.r;
+      if (b.vx < 0) b.vx = -b.vx * 0.3;
+    }
+    if (b.x + b.r > WALL_R) {
+      b.x = WALL_R - b.r;
+      if (b.vx > 0) b.vx = -b.vx * 0.3;
+    }
+    if (b.y + b.r > FLOOR_Y) {
+      b.y = FLOOR_Y - b.r;
+      if (b.vy > 0) b.vy = -b.vy * 0.28;
+      b.vx *= 0.94;
+      b.spin += b.vx * 0.0009;
+    }
+    if (b.y - b.r < 0) {
+      b.y = b.r;
+      if (b.vy < 0) b.vy = 0;
+    }
+  }
+}
+
+function solvePairs() {
+  const n = balls.length;
+  for (let i = 0; i < n; i++) {
+    const a = balls[i];
+    for (let j = i + 1; j < n; j++) {
+      const b = balls[j];
+
+      let dx = b.x - a.x, dy = b.y - a.y;
+      const rr = a.r + b.r;
+      let d2 = dx * dx + dy * dy;
+      if (d2 >= rr * rr) continue;
+      if (d2 < 0.0001) { dx = 0.1; dy = 0; d2 = 0.01; }
+
+      const d = Math.sqrt(d2);
+      const nx = dx / d, ny = dy / d;
+      const overlap = rr - d;
+
+      const im1 = 1 / a.mass, im2 = 1 / b.mass;
+      const imSum = im1 + im2;
+
+      const corr = overlap * 0.45 / imSum;
+      a.x -= nx * corr * im1;
+      a.y -= ny * corr * im1;
+      b.x += nx * corr * im2;
+      b.y += ny * corr * im2;
+
+      const rvx = b.vx - a.vx, rvy = b.vy - a.vy;
+      const vn = rvx * nx + rvy * ny;
+      if (vn < 0) {
+        const e = 0.12;
+        const jn = -(1 + e) * vn / imSum;
+        a.vx -= jn * nx * im1; a.vy -= jn * ny * im1;
+        b.vx += jn * nx * im2; b.vy += jn * ny * im2;
+
+        const tx = -ny, ty = nx;
+        const vt = rvx * tx + rvy * ty;
+        const jt = -vt * 0.12 / imSum;
+        a.vx -= jt * tx * im1; a.vy -= jt * ty * im1;
+        b.vx += jt * tx * im2; b.vy += jt * ty * im2;
+
+        a.spin -= vt * 0.0006;
+        b.spin += vt * 0.0006;
+      }
+    }
+  }
+}
+
+/* ============ 特效 ============ */
+function spawnBoom(x, y, r) {
+  for (let i = 0; i < 16; i++) {
+    const a  = Math.random() * Math.PI * 2;
+    const sp = 100 + Math.random() * 280;
+    particles.push({
+      x: x, y: y,
+      vx: Math.cos(a) * sp,
+      vy: Math.sin(a) * sp,
+      life: 0.65, maxLife: 0.65,
+      r: 2 + Math.random() * 4,
+      color: ['#ffd86f', '#fc6262', '#ffffff'][i % 3]
+    });
+  }
+}
+
+function addFloat(x, y, text) {
+  floaters.push({ x: x, y: y, text: text, life: 0.9, maxLife: 0.9 });
+}
+
+/* ============ 绘制 ============ */
+function drawBall(b, alpha, sc) {
+  const r  = b.r * (sc || 1) * (1 + (b.pop || 0) * 0.3);
+  const img = images[b.level];
+
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.translate(b.x, b.y);
+
+  ctx.beginPath();
+  ctx.arc(0, r * 0.1, r, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  ctx.fill();
+
+  ctx.save();
+  ctx.rotate(b.angle || 0);
+
+  if (img) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.clip();
+    ctx.drawImage(img, -r, -r, r * 2, r * 2);
+
+    const g = ctx.createRadialGradient(0, 0, r * 0.55, 0, 0, r);
+    g.addColorStop(0, 'rgba(0,0,0,0)');
+    g.addColorStop(1, 'rgba(0,0,0,0.35)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    ctx.beginPath();
+    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.lineWidth = Math.max(1.5, r * 0.06);
+    ctx.strokeStyle = 'rgba(255,255,255,0.8)';
+    ctx.stroke();
+  } else {
+    const p = PALETTE[b.level];
+    const g = ctx.createRadialGradient(-r * 0.35, -r * 0.4, r * 0.05, 0, 0, r * 1.15);
+    g.addColorStop(0, p.a);
+    g.addColorStop(1, p.b);
+
+    ctx.beginPath();
+    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.fillStyle = g;
+    ctx.fill();
+    ctx.lineWidth = Math.max(1.5, r * 0.06);
+    ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+    ctx.stroke();
+
+    ctx.font = (r * 1.1).toFixed(1) + 'px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(EMOJIS[b.level], 0, r * 0.06);
+  }
+
+  ctx.restore();
+
+  ctx.beginPath();
+  ctx.ellipse(-r * 0.34, -r * 0.42, r * 0.28, r * 0.16, -0.6, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(255,255,255,0.42)';
+  ctx.fill();
+
+  ctx.restore();
+}
+
+function drawCircleBtn(b, icon) {
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(255,255,255,0.08)';
+  ctx.fill();
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = 'rgba(255,255,255,0.16)';
+  ctx.stroke();
+
+  ctx.font = (b.r * 1.15).toFixed(1) + 'px "Apple Color Emoji","Segoe UI Emoji",sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(icon, b.x, b.y + 1);
+  ctx.restore();
+}
+
+function render() {
+  const bg = ctx.createLinearGradient(0, 0, 0, H);
+  bg.addColorStop(0, '#161c2c');
+  bg.addColorStop(1, '#0a0d15');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  roundRectPath(ctx, WALL_L - 8, 96, WALL_R - WALL_L + 16, FLOOR_Y - 96 + 12, 20);
+  ctx.fillStyle = 'rgba(255,255,255,0.025)';
+  ctx.fill();
+
+  ctx.save();
+  ctx.setLineDash([7, 7]);
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = overTimer > 0 ? 'rgba(255,80,80,0.75)' : 'rgba(255,110,110,0.26)';
+  ctx.beginPath();
+  ctx.moveTo(WALL_L, DANGER_Y);
+  ctx.lineTo(WALL_R, DANGER_Y);
+  ctx.stroke();
+  ctx.restore();
+
+  ctx.save();
+  ctx.lineWidth = 3;
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = 'rgba(110,170,255,0.45)';
+  ctx.beginPath();
+  ctx.moveTo(WALL_L, 96);      ctx.lineTo(WALL_L, FLOOR_Y);
+  ctx.moveTo(WALL_R, 96);      ctx.lineTo(WALL_R, FLOOR_Y);
+  ctx.moveTo(WALL_L, FLOOR_Y); ctx.lineTo(WALL_R, FLOOR_Y);
+  ctx.stroke();
+  ctx.restore();
+
+  if (state === 'playing') {
+    const r = RADII[curLevel];
+    const x = clamp(pointerX, WALL_L + r + 2, WALL_R - r - 2);
+
+    ctx.save();
+    ctx.setLineDash([5, 9]);
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+    ctx.beginPath();
+    ctx.moveTo(x, DROP_Y + r);
+    ctx.lineTo(x, FLOOR_Y - 4);
+    ctx.stroke();
+    ctx.restore();
+
+    drawBall(
+      { x: x, y: DROP_Y, r: r, level: curLevel, angle: 0, pop: 0 },
+      dropCd > 0 ? 0.35 : 0.9,
+      1
+    );
+
+    drawBall(
+      { x: BTN_PHOTO.x, y: 84, r: RADII[nextLevel], level: nextLevel, angle: 0, pop: 0 },
+      0.55,
+      0.5
+    );
+  }
+
+  for (let i = 0; i < balls.length; i++) drawBall(balls[i], 1, 1);
+
+  for (let i = 0; i < particles.length; i++) {
+    const p = particles[i];
+    ctx.globalAlpha = Math.max(0, p.life / p.maxLife);
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+    ctx.fillStyle = p.color;
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  for (let i = 0; i < floaters.length; i++) {
+    const f = floaters[i];
+    ctx.globalAlpha = Math.max(0, f.life / f.maxLife);
+    ctx.font = 'bold 16px -apple-system,"PingFang SC",sans-serif';
+    ctx.fillStyle = '#ffd86f';
+    ctx.fillText(f.text, f.x, f.y);
+  }
+  ctx.globalAlpha = 1;
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  ctx.fillStyle = 'rgba(255,255,255,0.42)';
+  ctx.font = '11px -apple-system,"PingFang SC",sans-serif';
+  ctx.fillText('得分', W / 2, 22);
+
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 26px -apple-system,"PingFang SC",sans-serif';
+  ctx.fillText(String(score), W / 2, 46);
+
+  drawCircleBtn(BTN_RESTART, '🔄');
+  drawCircleBtn(BTN_PHOTO, '📷');
+
+  if (state === 'over') drawOverlay();
+}
+
+function drawOverlay() {
+  ctx.save();
+  ctx.fillStyle = 'rgba(8,10,18,0.84)';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 30px -apple-system,"PingFang SC",sans-serif';
+  ctx.fillText('游戏结束', W / 2, H / 2 - 96);
+
+  ctx.fillStyle = 'rgba(255,255,255,0.5)';
+  ctx.font = '14px -apple-system,"PingFang SC",sans-serif';
+  ctx.fillText('本局得分', W / 2, H / 2 - 44);
+
+  ctx.fillStyle = '#ffd86f';
+  ctx.font = 'bold 52px -apple-system,"PingFang SC",sans-serif';
+  ctx.fillText(String(score), W / 2, H / 2 + 6);
+
+  ctx.fillStyle = 'rgba(255,255,255,0.4)';
+  ctx.font = '13px -apple-system,"PingFang SC",sans-serif';
+  ctx.fillText('最高纪录 ' + best, W / 2, H / 2 + 54);
+
+  const bw = 170, bh = 48;
+  const bx = W / 2 - bw / 2, by = H / 2 + 100;
+  roundRectPath(ctx, bx, by, bw, bh, 24);
+  ctx.fillStyle = 'rgba(106,169,255,0.95)';
+  ctx.fill();
+
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 17px -apple-system,"PingFang SC",sans-serif';
+  ctx.fillText('再来一局', W / 2, by + bh / 2 + 1);
+
+  ctx.restore();
+}
+
+/* ============ 主循环 ============ */
+let lastT = 0;
+let acc = 0;
+const STEP = 1 / 60;
+
+function frame(t) {
+  requestAnimationFrame(frame);
+
+  if (!lastT) lastT = t;
+  let dt = (t - lastT) / 1000;
+  lastT = t;
+  if (dt > 0.1) dt = 0.1;
+
+  acc += dt;
+  let n = 0;
+  while (acc >= STEP && n < 4) {
+    step(STEP);
+    acc -= STEP;
+    n++;
+  }
+  if (n >= 4) acc = 0;
+
+  render();
+}
+
+/* ============ 输入 ============ */
+canvas.addEventListener('pointerdown', function (e) {
+  e.preventDefault();
+  const p = toLocal(e.clientX, e.clientY);
+
+  if (state === 'over') {
+    const bw = 170, bh = 48;
+    const bx = W / 2 - bw / 2, by = H / 2 + 100;
+    if (p.x >= bx && p.x <= bx + bw && p.y >= by && p.y <= by + bh) reset();
+    return;
+  }
+
+  if (inBtn(BTN_RESTART, p)) { reset(); return; }
+  if (inBtn(BTN_PHOTO, p))   { openPanel(); return; }
+
+  if (state === 'playing') {
+    pointerX = clamp(p.x, WALL_L, WALL_R);
+    pressing = true;
+    if (e.pointerType === 'mouse') {
+      pressing = false;
+      drop();
+    }
+  }
+}, { passive: false });
+
+canvas.addEventListener('pointermove', function (e) {
+  if (state !== 'playing') return;
+  const p = toLocal(e.clientX, e.clientY);
+  if (e.pointerType === 'mouse' || pressing) {
+    pointerX = clamp(p.x, WALL_L, WALL_R);
+  }
+}, { passive: true });
+
+window.addEventListener('pointerup', function () {
+  if (pressing) {
+    pressing = false;
+    drop();
+  }
+});
+
+window.addEventListener('pointercancel', function () {
+  pressing = false;
+});
+
+window.addEventListener('keydown', function (e) {
+  if (state === 'playing') {
+    if (e.key === 'ArrowLeft')  pointerX = clamp(pointerX - 14, WALL_L, WALL_R);
+    if (e.key === 'ArrowRight') pointerX = clamp(pointerX + 14, WALL_L, WALL_R);
+    if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); drop(); }
+  } else if (state === 'over' && (e.key === ' ' || e.key === 'Enter')) {
+    reset();
+  }
+});
+
+/* ============ 照片设置 ============ */
+function openPanel() {
+  panel.classList.remove('hidden');
+  renderSlots();
+}
+
+function renderSlots() {
+  slotsEl.innerHTML = '';
+  for (let lv = 0; lv < LEVELS; lv++) {
+    (function (level) {
+      const el = document.createElement('div');
+      el.className = 'slot';
+
+      if (imageUrls[level]) {
+        el.style.backgroundImage = 'url("' + imageUrls[level] + '")';
+        el.style.borderStyle = 'solid';
+        el.style.borderColor = 'rgba(120,180,255,0.6)';
+      } else {
+        el.textContent = EMOJIS[level];
+      }
+
+      el.addEventListener('click', function () {
+        slotEditing = level;
+        fileInput.value = '';
+        fileInput.click();
+      });
+
+      slotsEl.appendChild(el);
+    })(lv);
+  }
+}
+
+/* 单张：点槽位替换 */
+fileInput.addEventListener('change', function (e) {
+  const f = e.target.files && e.target.files[0];
+  if (!f || slotEditing < 0) return;
+  loadImageForSlot(f, slotEditing);
+});
+
+function loadImageForSlot(file, level) {
+  const url = URL.createObjectURL(file);
+  const img = new Image();
+
+  img.onload = function () {
+    images[level] = toSquareCanvas(img);
+    imageUrls[level] = url;          // 面板预览用，保留不 revoke
+    renderSlots();
+  };
+
+  img.onerror = function () {
+    URL.revokeObjectURL(url);
+  };
+
+  img.src = url;
+}
+
+/* 批量：一次选 10 张，按文件名排序自动分配 1~10 号 */
+document.getElementById('batchBtn').addEventListener('click', function () {
+  batchInput.value = '';
+  batchInput.click();
+});
+
+batchInput.addEventListener('change', function (e) {
+  const files = Array.from(e.target.files || []);
+  if (!files.length) return;
+
+  files.sort(function (a, b) {
+    return a.name.localeCompare(b.name, undefined, { numeric: true });
+  });
+
+  files.slice(0, LEVELS).forEach(function (f, i) {
+    loadImageForSlot(f, i);
+  });
+});
+
+/* 自动尝试加载同目录 picture/1.jpg ~ picture/10.jpg */
+const AUTO_EXTS = ['jpg', 'jpeg', 'png', 'webp'];
+
+function autoLoadPicture(i, extIdx) {
+  if (extIdx >= AUTO_EXTS.length) return;
+
+  const path = 'picture/' + (i + 1) + '.' + AUTO_EXTS[extIdx];
+  const img = new Image();
+
+  img.onload = function () {
+    images[i] = toSquareCanvas(img);
+    imageUrls[i] = path;
+    renderSlots();
+  };
+
+  img.onerror = function () {
+    autoLoadPicture(i, extIdx + 1);
+  };
+
+  img.src = path;
+}
+
+function autoLoadPictures() {
+  for (let i = 0; i < LEVELS; i++) autoLoadPicture(i, 0);
+}
+
+document.getElementById('closePanel').addEventListener('click', function () {
+  panel.classList.add('hidden');
+});
+
+/* ============ 启动 ============ */
+resize();
+reset();
+autoLoadPictures();     // 相对路径能读到就自动用照片，读不到就用表情
+requestAnimationFrame(frame);
+
+document.addEventListener('visibilitychange', function () {
+  if (!document.hidden) lastT = 0;
+});
+
+})();
+</script>
+</body>
+</html>
