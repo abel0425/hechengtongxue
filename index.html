@@ -53,12 +53,12 @@
     <canvas id="game"></canvas>
     <div id="panel" class="hidden">
       <div class="ptitle">
-        小圆 = 1号同学，越合越大，最大是 10号<br>
-        点单个圆可单独替换，或一次批量选 10 张
+        小圆 = 1号同学，越合越大，最大是 11号<br>
+        点单个圆可单独替换，或一次批量选 11 张
       </div>
       <div class="slots" id="slots"></div>
       <div class="row">
-        <button class="pbtn ghost" id="batchBtn">批量选择 10 张</button>
+        <button class="pbtn ghost" id="batchBtn">批量选择 11 张</button>
         <button class="pbtn" id="closePanel">完成</button>
       </div>
     </div>
@@ -78,10 +78,10 @@ const FLOOR_Y = 610;
 const DANGER_Y = 130;
 const DROP_Y = 76;
 const GRAVITY = 2000;
-const LEVELS = 10;              // 共 10 级，对应 10 个同学
-const MAX_LEVEL = LEVELS - 1;   // 9
+const LEVELS = 11;              // 共 11 级，对应 11 个同学
+const MAX_LEVEL = LEVELS - 1;   // 10
 
-const RADII = [13, 17, 22, 27, 33, 39, 46, 53, 60, 68];
+const RADII = [13, 17, 22, 27, 33, 39, 46, 53, 60, 68, 76];
 const PALETTE = [
   { a: '#8fd6ff', b: '#3d8ee0' },
   { a: '#b6f09c', b: '#4caf50' },
@@ -92,9 +92,10 @@ const PALETTE = [
   { a: '#9ee7e5', b: '#00a3a3' },
   { a: '#ffc2e2', b: '#d6419b' },
   { a: '#c9d4ff', b: '#5b6ff0' },
-  { a: '#ffe4a3', b: '#c98a00' }
+  { a: '#ffe4a3', b: '#c98a00' },
+  { a: '#d8f5c0', b: '#6a9e1e' }
 ];
-const EMOJIS = ['😀', '😄', '😎', '🤓', '😍', '🥳', '🤩', '😜', '🧐', '🤯'];
+const EMOJIS = ['😀', '😄', '😎', '🤓', '😍', '🥳', '🤩', '😜', '🧐', '🤯', '🤠'];
 
 const BTN_RESTART = { x: 36, y: 36, r: 18 };
 const BTN_PHOTO   = { x: W - 36, y: 36, r: 18 };
@@ -202,7 +203,7 @@ function makeBall(x, y, level, vx, vy) {
 }
 
 function randLevel() {
-  return Math.floor(Math.random() * LEVELS);   // 0..9，即 1号 ~ 10号
+  return Math.floor(Math.random() * LEVELS);   // 0..10，即 1号 ~ 11号
 }
 
 /* ============ 游戏流程 ============ */
@@ -810,7 +811,7 @@ function loadImageForSlot(file, level) {
   img.src = url;
 }
 
-/* 批量：一次选 10 张，按文件名排序自动分配 1~10 号 */
+/* 批量：一次选 11 张，按文件名排序自动分配 1~11 号 */
 document.getElementById('batchBtn').addEventListener('click', function () {
   batchInput.value = '';
   batchInput.click();
@@ -829,7 +830,7 @@ batchInput.addEventListener('change', function (e) {
   });
 });
 
-/* 自动尝试加载同目录 picture/1.jpg ~ picture/10.jpg */
+/* 自动尝试加载同目录 picture/1.jpg ~ picture/11.jpg */
 const AUTO_EXTS = ['jpg', 'jpeg', 'png', 'webp'];
 
 function autoLoadPicture(i, extIdx) {
