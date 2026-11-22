@@ -73,9 +73,10 @@
 
 /* ============ 基础参数 ============ */
 const W = 360, H = 640;
-const WALL_L = 12, WALL_R = 348;   // 加宽场地：原 30 / 330
+const WALL_L = 12, WALL_R = 348;   // 加宽场地
 const FLOOR_Y = 610;
-const DANGER_Y = 130;
+const DANGER_Y = 130;              // 超过这条线且静止 -> 游戏结束
+const WARN_Y   = 178;              // 球顶进入 130~178 -> 警告区
 const DROP_Y = 76;
 const GRAVITY = 2000;
 const LEVELS = 13;              // 共 13 级，对应 13 个同学
@@ -99,6 +100,10 @@ const PALETTE = [
 ];
 const EMOJIS = ['😀', '😄', '😎', '🤓', '😍', '🥳', '🤩', '😜', '🧐', '🤯', '🤠', '👻', '🤖'];
 
+/* 加权随机：越大的球越稀有 */
+const WEIGHTS_ALL   = [34, 26, 15, 10, 6, 3.5, 2.2, 1.6, 1.0, 0.7, 0.5, 0.35, 0.25];
+const WEIGHTS_EARLY = [34, 26, 15, 10];      // 前 10 颗只用 1~4 号
+
 const BTN_RESTART = { x: 36, y: 36, r: 18 };
 const BTN_PHOTO   = { x: W - 36, y: 36, r: 18 };
 
@@ -120,8 +125,11 @@ let state = 'playing';
 let curLevel = 0, nextLevel = 0;
 let pointerX = W / 2;
 let dropCd = 0;
+let dropCount = 0;             // 本局已投球数（开局保护）
 let overTimer = 0;
 let pressing = false;
+let warnLevel = 0;             // 0~1 平滑警告强度
+let nowT = 0;                  // 全局时间（秒），用于闪烁
 
 let images    = new Array(LEVELS).fill(null);  // 裁剪后的 canvas
 let imageUrls = new Array(LEVELS).fill('');    // 面板预览用
@@ -204,8 +212,21 @@ function makeBall(x, y, level, vx, vy) {
   };
 }
 
+/* 加权随机选取 */
+function weightedPick(weights) {
+  let total = 0;
+  for (let i = 0; i < weights.length; i++) total += weights[i];
+  let r = Math.random() * total;
+  for (let i = 0; i < weights.length; i++) {
+    r -= weights[i];
+    if (r <= 0) return i;
+  }
+  return 0;
+}
+
 function randLevel() {
-  return Math.floor(Math.random() * LEVELS);   // 0..12，即 1号 ~ 13号
+  if (dropCount < 10) return weightedPick(WEIGHTS_EARLY);  // 前 10 颗 1~4 号
+  return weightedPick(WEIGHTS_ALL);                        // 之后 1~13 号加权
 }
 
 /* ============ 游戏流程 ============ */
@@ -216,6 +237,8 @@ function reset() {
   score = 0;
   overTimer = 0;
   dropCd = 0;
+  dropCount = 0;
+  warnLevel = 0;
   pointerX = W / 2;
   curLevel  = randLevel();
   nextLevel = randLevel();
@@ -238,6 +261,7 @@ function drop() {
   const x = clamp(pointerX, WALL_L + r + 1, WALL_R - r - 1);
   balls.push(makeBall(x, DROP_Y, curLevel, 0, 260));
 
+  dropCount++;
   curLevel  = nextLevel;
   nextLevel = randLevel();
   dropCd = 0.28;
@@ -293,20 +317,28 @@ function step(dt) {
     if (f.life <= 0) floaters.splice(i, 1);
   }
 
-  /* 6. 危险判定 */
+  /* 6. 危险 / 警告判定 */
   if (state === 'playing') {
     let danger = false;
+    let warn = false;
+
     for (let i = 0; i < balls.length; i++) {
       const b = balls[i];
       if (b.age < 0.6) continue;
-      if (b.y - b.r < DANGER_Y) {
-        const sp = Math.sqrt(b.vx * b.vx + b.vy * b.vy);
-        if (sp < 90) { danger = true; break; }
-      }
+      const top = b.y - b.r;
+      const sp = Math.sqrt(b.vx * b.vx + b.vy * b.vy);
+
+      if (top < DANGER_Y && sp < 90)  danger = true;
+      if (top < WARN_Y   && sp < 120) warn = true;   // 警告区：球顶进入 130~178
     }
+
     if (danger) overTimer += dt;
     else overTimer = Math.max(0, overTimer - dt * 3);
     if (overTimer > 1.5) gameOver();
+
+    /* 平滑警告强度：0 -> 1 约 0.25 秒 */
+    const target = warn ? 1 : 0;
+    warnLevel += (target - warnLevel) * Math.min(1, dt * 6);
   }
 }
 
@@ -553,16 +585,37 @@ function render() {
   ctx.fillStyle = 'rgba(255,255,255,0.025)';
   ctx.fill();
 
+  /* 警告区填充条 */
+  if (warnLevel > 0.02 && state === 'playing') {
+    ctx.save();
+    ctx.globalAlpha = warnLevel * 0.12;
+    ctx.fillStyle = '#ff4d4d';
+    ctx.fillRect(WALL_L, DANGER_Y, WALL_R - WALL_L, WARN_Y - DANGER_Y);
+    ctx.restore();
+  }
+
+  /* 危险线：警告时变红闪烁 */
   ctx.save();
   ctx.setLineDash([7, 7]);
   ctx.lineWidth = 2;
-  ctx.strokeStyle = overTimer > 0 ? 'rgba(255,80,80,0.75)' : 'rgba(255,110,110,0.26)';
+  let lineColor;
+  if (overTimer > 0) {
+    lineColor = 'rgba(255,80,80,0.75)';
+  } else if (warnLevel > 0.02) {
+    const pulse = 0.75 + 0.25 * Math.sin(nowT * 8);
+    const a = 0.26 + (0.75 - 0.26) * warnLevel * pulse;
+    lineColor = 'rgba(255,80,80,' + a.toFixed(3) + ')';
+  } else {
+    lineColor = 'rgba(255,110,110,0.26)';
+  }
+  ctx.strokeStyle = lineColor;
   ctx.beginPath();
   ctx.moveTo(WALL_L, DANGER_Y);
   ctx.lineTo(WALL_R, DANGER_Y);
   ctx.stroke();
   ctx.restore();
 
+  /* 墙壁 */
   ctx.save();
   ctx.lineWidth = 3;
   ctx.lineCap = 'round';
@@ -594,7 +647,7 @@ function render() {
       1
     );
 
-    /* 下一球预告：clamp 防止大球超出画布 */
+    /* 下一球预告 */
     const nr = RADII[nextLevel];
     const nx = clamp(BTN_PHOTO.x, nr + 6, W - nr - 6);
     drawBall(
@@ -640,6 +693,21 @@ function render() {
 
   drawCircleBtn(BTN_RESTART, '🔄');
   drawCircleBtn(BTN_PHOTO, '📷');
+
+  /* 屏幕边缘泛红：警告时脉冲 */
+  if (warnLevel > 0.02 && state === 'playing') {
+    ctx.save();
+    const a = warnLevel * (0.22 + 0.14 * Math.sin(nowT * 6));
+    const g = ctx.createRadialGradient(
+      W / 2, H / 2, Math.min(W, H) * 0.34,
+      W / 2, H / 2, Math.max(W, H) * 0.72
+    );
+    g.addColorStop(0, 'rgba(255,40,40,0)');
+    g.addColorStop(1, 'rgba(255,40,40,' + a.toFixed(3) + ')');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+    ctx.restore();
+  }
 
   if (state === 'over') drawOverlay();
 }
@@ -693,6 +761,8 @@ function frame(t) {
   let dt = (t - lastT) / 1000;
   lastT = t;
   if (dt > 0.1) dt = 0.1;
+
+  nowT = t / 1000;
 
   acc += dt;
   let n = 0;
