@@ -224,9 +224,22 @@ function weightedPick(weights) {
   return 0;
 }
 
+/* 查场上当前最大球的等级索引，没球返回 -1 */
+function maxLevelOnBoard() {
+  let m = -1;
+  for (let i = 0; i < balls.length; i++) {
+    if (balls[i].level > m) m = balls[i].level;
+  }
+  return m;
+}
+
 function randLevel() {
-  if (dropCount < 10) return weightedPick(WEIGHTS_EARLY);  // 前 10 颗 1~4 号
-  return weightedPick(WEIGHTS_ALL);                        // 之后 1~13 号加权
+  // 前 10 颗固定 1~4 号
+  if (dropCount < 10) return weightedPick(WEIGHTS_EARLY);
+
+  // 随机上限 = 场上最大球等级，但至少能出到 4 号（索引 3）
+  const cap = Math.min(MAX_LEVEL, Math.max(3, maxLevelOnBoard()));
+  return weightedPick(WEIGHTS_ALL.slice(0, cap + 1));
 }
 
 /* ============ 游戏流程 ============ */
