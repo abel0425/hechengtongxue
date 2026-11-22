@@ -73,7 +73,7 @@
 
 /* ============ 基础参数 ============ */
 const W = 360, H = 640;
-const WALL_L = 30, WALL_R = 330;
+const WALL_L = 12, WALL_R = 348;   // 加宽场地：原 30 / 330
 const FLOOR_Y = 610;
 const DANGER_Y = 130;
 const DROP_Y = 76;
@@ -594,8 +594,11 @@ function render() {
       1
     );
 
+    /* 下一球预告：clamp 防止大球超出画布 */
+    const nr = RADII[nextLevel];
+    const nx = clamp(BTN_PHOTO.x, nr + 6, W - nr - 6);
     drawBall(
-      { x: BTN_PHOTO.x, y: 84, r: RADII[nextLevel], level: nextLevel, angle: 0, pop: 0 },
+      { x: nx, y: 84, r: nr, level: nextLevel, angle: 0, pop: 0 },
       0.55,
       0.5
     );
